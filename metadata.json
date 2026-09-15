@@ -1,0 +1,6 @@
+{
+  "name": "Free Short Drama",
+  "description": "Stream trending short dramas with instant playback, personalized watchlists, episode guides, and customizable ad management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
