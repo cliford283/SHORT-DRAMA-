@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper: Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper: Check if user is an authorized admin
+    // Checks both custom claims (request.auth.token.admin)
+    // and the server-side user document role ('admin')
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.admin == true ||
+        request.auth.token.email in ['clifordmulumba@gmail.com', 'admin@shortdrama.tv'] ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin')
+      );
+    }
+
+    // DRAMAS: Anyone authenticated can read/stream. Only Admins can create, update, or delete.
+    match /dramas/{dramaId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isAdmin();
+
+      // Subcollection for episodes if partitioned
+      match /episodes/{episodeId} {
+        allow read: if isAuthenticated();
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    // USERS: Each authenticated user can read & update their own record (saved dramas, history).
+    // Admins can read all users.
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow create, update: if isAuthenticated() && request.auth.uid == userId;
+      allow delete: if isAdmin();
+    }
+
+    // APP CONFIG & AD SETTINGS: All authenticated users can read. Only admins can modify.
+    match /app_data/{configId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}

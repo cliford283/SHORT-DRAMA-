@@ -1,0 +1,32 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper: Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper: Check if user is an authorized admin
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.admin == true ||
+        request.auth.token.email in ['clifordmulumba@gmail.com', 'admin@shortdrama.tv']
+      );
+    }
+
+    // Videos: Any authenticated user can stream/read MP4 videos.
+    // ONLY admins can upload, modify, or delete MP4 video assets.
+    match /videos/{dramaId}/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Posters / Thumbnails: Any authenticated user can view.
+    // ONLY admins can upload poster image assets.
+    match /posters/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}
