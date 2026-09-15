@@ -60,6 +60,7 @@ fun ProfileScreen(
   onCreateProfile: (name: String, email: String, isAdmin: Boolean) -> Unit,
   onBackClick: () -> Unit,
   onOpenAdmin: () -> Unit,
+  onSignOut: () -> Unit = {},
   modifier: Modifier = Modifier
 ) {
   var showCreateForm by remember { mutableStateOf(false) }
@@ -168,6 +169,18 @@ fun ProfileScreen(
             Spacer(modifier = Modifier.width(6.dp))
             Text("Open Admin & AdSense Control", fontWeight = FontWeight.Bold)
           }
+        }
+
+        androidx.compose.material3.OutlinedButton(
+          onClick = onSignOut,
+          colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF5252)),
+          shape = RoundedCornerShape(6.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .testTag("btn_sign_out")
+        ) {
+          Text("Sign Out of Session", fontWeight = FontWeight.Bold)
         }
       }
     }

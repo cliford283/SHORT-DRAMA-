@@ -109,7 +109,8 @@ fun VideoPlayerScreen(
   onFavoriteClick: (String) -> Unit,
   onDownloadClick: (String) -> Unit,
   onRecordProgress: (String, Int, Long, Long) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  initialPositionMs: Long = 0L
 ) {
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
@@ -120,6 +121,11 @@ fun VideoPlayerScreen(
   var currentPositionMs by remember { mutableLongStateOf(0L) }
   var totalDurationMs by remember { mutableLongStateOf(106000L) }
   var areControlsVisible by remember { mutableStateOf(true) }
+
+  // Resumed playback badge notification state
+  var showResumedToast by remember { mutableStateOf(false) }
+  var resumedToastText by remember { mutableStateOf("") }
+  var hasResumedPosition by remember { mutableStateOf(false) }
 
   // Modals
   var showEpisodesSheet by remember { mutableStateOf(false) }
@@ -159,13 +165,42 @@ fun VideoPlayerScreen(
     }
   }
 
-  // Load episode stream into ExoPlayer once pre-roll completes
+  // Auto-hide resumed playback toast after 3 seconds
+  LaunchedEffect(showResumedToast) {
+    if (showResumedToast) {
+      delay(3000L)
+      showResumedToast = false
+    }
+  }
+
+  // Load episode stream into ExoPlayer once pre-roll completes and restore saved playback position
   LaunchedEffect(currentEpisode.id, isPreRollActive) {
     if (!isPreRollActive) {
       try {
         val mediaItem = MediaItem.fromUri(Uri.parse(currentEpisode.videoUrl))
         exoPlayer.setMediaItem(mediaItem)
         exoPlayer.prepare()
+
+        // Check if user has a saved resume position in Firestore for this episode
+        val savedProg = currentProfile.watchHistory[drama.id]
+        val seekTarget = if (!hasResumedPosition && initialPositionMs > 0L) {
+          initialPositionMs
+        } else if (!hasResumedPosition && savedProg != null && savedProg.episodeNumber == currentEpisode.episodeNumber && savedProg.positionMs > 2000L) {
+          savedProg.positionMs
+        } else {
+          0L
+        }
+
+        if (seekTarget > 0L) {
+          exoPlayer.seekTo(seekTarget)
+          hasResumedPosition = true
+          val totalSec = seekTarget / 1000
+          val m = totalSec / 60
+          val s = totalSec % 60
+          resumedToastText = String.format("Resumed at %02d:%02d • Synced with Firestore", m, s)
+          showResumedToast = true
+        }
+
         exoPlayer.play()
         isPlaying = true
       } catch (e: Exception) {
@@ -207,6 +242,9 @@ fun VideoPlayerScreen(
     }
     exoPlayer.addListener(listener)
     onDispose {
+      val finalPos = exoPlayer.currentPosition
+      val finalDur = if (exoPlayer.duration > 0) exoPlayer.duration else totalDurationMs
+      onRecordProgress(drama.id, currentEpisode.episodeNumber, finalPos, finalDur)
       exoPlayer.removeListener(listener)
       exoPlayer.release()
     }
@@ -220,6 +258,9 @@ fun VideoPlayerScreen(
           wasPlayingBeforePause = exoPlayer.isPlaying
           exoPlayer.pause()
           isPlaying = false
+          val finalPos = exoPlayer.currentPosition
+          val finalDur = if (exoPlayer.duration > 0) exoPlayer.duration else totalDurationMs
+          onRecordProgress(drama.id, currentEpisode.episodeNumber, finalPos, finalDur)
         }
         Lifecycle.Event.ON_RESUME -> {
           if (wasPlayingBeforePause && !isPreRollActive) {
@@ -262,6 +303,40 @@ fun VideoPlayerScreen(
       },
       modifier = Modifier.fillMaxSize()
     )
+
+    // Resumed playback badge overlay
+    AnimatedVisibility(
+      visible = showResumedToast,
+      enter = fadeIn(),
+      exit = fadeOut(),
+      modifier = Modifier
+        .align(Alignment.TopCenter)
+        .padding(top = 80.dp)
+    ) {
+      Box(
+        modifier = Modifier
+          .clip(RoundedCornerShape(20.dp))
+          .background(Color.Black.copy(alpha = 0.85f))
+          .border(1.dp, DramaRed.copy(alpha = 0.8f), RoundedCornerShape(20.dp))
+          .padding(horizontal = 16.dp, vertical = 8.dp)
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Icon(
+            imageVector = Icons.Filled.PlayArrow,
+            contentDescription = null,
+            tint = DramaRed,
+            modifier = Modifier.size(16.dp)
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text(
+            text = resumedToastText,
+            color = Color.White,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold
+          )
+        }
+      }
+    }
 
     // Subtitle Display in center / lower third (matching photo 8 & 9)
     if (selectedSubtitle != "None" && !isPreRollActive) {

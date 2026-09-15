@@ -70,7 +70,11 @@ object DramaRepository {
     }
   }
 
-  private val initialDramas = listOf(
+  fun generateDefaultEpisodes(dramaId: String, count: Int, baseTitle: String): List<Episode> {
+    return generateEpisodes(dramaId, count, baseTitle)
+  }
+
+  val initialDramas = listOf(
     Drama(
       id = "drama_mafia_don",
       title = "The Mafia Don Hired Me as His Wife",
@@ -226,7 +230,8 @@ object DramaRepository {
 
   fun toggleFavorite(dramaId: String) {
     val current = _currentProfile.value
-    val newSaved = if (current.savedDramaIds.contains(dramaId)) {
+    val isCurrentlySaved = current.savedDramaIds.contains(dramaId)
+    val newSaved = if (isCurrentlySaved) {
       current.savedDramaIds - dramaId
     } else {
       current.savedDramaIds + dramaId
@@ -234,6 +239,50 @@ object DramaRepository {
     val updatedProfile = current.copy(savedDramaIds = newSaved)
     _currentProfile.value = updatedProfile
     _profiles.update { list -> list.map { if (it.id == updatedProfile.id) updatedProfile else it } }
+    com.example.data.firebase.FirestoreDramaRepository.toggleWatchlistInFirestore(
+      userId = current.id,
+      dramaId = dramaId,
+      isCurrentlySaved = isCurrentlySaved
+    )
+  }
+
+  fun updateWatchlistFromFirestore(ids: Set<String>) {
+    val current = _currentProfile.value
+    val updatedProfile = current.copy(savedDramaIds = ids)
+    _currentProfile.value = updatedProfile
+    _profiles.update { list -> list.map { if (it.id == updatedProfile.id) updatedProfile else it } }
+  }
+
+  fun updateWatchHistoryFromFirestore(history: Map<String, WatchProgress>) {
+    val current = _currentProfile.value
+    val updatedProfile = current.copy(watchHistory = history)
+    _currentProfile.value = updatedProfile
+    _profiles.update { list -> list.map { if (it.id == updatedProfile.id) updatedProfile else it } }
+
+    // Reflect synced watch positions onto dramas for Continue Watching
+    if (history.isNotEmpty()) {
+      _dramas.update { list ->
+        list.map { drama ->
+          val prog = history[drama.id]
+          if (prog != null) {
+            val progressRatio = if (prog.durationMs > 0) {
+              (prog.positionMs.toFloat() / prog.durationMs.toFloat()).coerceIn(0.05f, 0.98f)
+            } else 0.25f
+            drama.copy(
+              isResume = true,
+              resumeEpisode = prog.episodeNumber,
+              resumeProgress = progressRatio
+            )
+          } else {
+            drama
+          }
+        }
+      }
+    }
+  }
+
+  fun getResumeProgress(dramaId: String): WatchProgress? {
+    return _currentProfile.value.watchHistory[dramaId]
   }
 
   fun toggleDownload(dramaId: String) {
@@ -248,6 +297,30 @@ object DramaRepository {
     _profiles.update { list -> list.map { if (it.id == updatedProfile.id) updatedProfile else it } }
   }
 
+  fun setDramasFromFirestore(list: List<Drama>) {
+    if (list.isNotEmpty()) {
+      _dramas.value = list
+    }
+  }
+
+  fun setFirebaseUserProfile(uid: String, name: String, email: String, isAdmin: Boolean) {
+    val existing = _profiles.value.find { it.id == uid }
+    val profile = existing?.copy(name = name, email = email, isAdmin = isAdmin)
+      ?: UserProfile(
+        id = uid,
+        name = name.ifBlank { email.substringBefore("@").replaceFirstChar { it.uppercase() } },
+        email = email,
+        isAdmin = isAdmin,
+        avatarColorHex = if (isAdmin) 0xFF00E676 else 0xFFE50914
+      )
+    _currentProfile.value = profile
+    _profiles.update { list ->
+      if (list.any { it.id == uid }) list.map { if (it.id == uid) profile else it }
+      else listOf(profile) + list
+    }
+    com.example.data.firebase.FirestoreDramaRepository.syncUserProfile(uid, email, profile.name, isAdmin)
+  }
+
   fun recordWatchProgress(dramaId: String, episodeNumber: Int, positionMs: Long, durationMs: Long) {
     val current = _currentProfile.value
     val progress = WatchProgress(dramaId, episodeNumber, positionMs, durationMs)
@@ -255,6 +328,7 @@ object DramaRepository {
     val updatedProfile = current.copy(watchHistory = newHistory)
     _currentProfile.value = updatedProfile
     _profiles.update { list -> list.map { if (it.id == updatedProfile.id) updatedProfile else it } }
+    com.example.data.firebase.FirestoreDramaRepository.saveWatchProgress(current.id, dramaId, progress)
   }
 
   // Admin Controls
@@ -295,13 +369,16 @@ object DramaRepository {
       episodes = initialEpisodes
     )
     _dramas.update { listOf(newDrama) + it }
+    com.example.data.firebase.FirestoreDramaRepository.saveDrama(newDrama)
   }
 
   fun deleteDrama(dramaId: String) {
     _dramas.update { it.filterNot { drama -> drama.id == dramaId } }
+    com.example.data.firebase.FirestoreDramaRepository.deleteDrama(dramaId)
   }
 
   fun addEpisode(dramaId: String, title: String, videoUrl: String, durationSec: Int = 120) {
+    var updatedDrama: Drama? = null
     _dramas.update { dramaList ->
       dramaList.map { drama ->
         if (drama.id == dramaId) {
@@ -314,27 +391,34 @@ object DramaRepository {
             durationSeconds = durationSec,
             videoUrl = videoUrl
           )
-          drama.copy(
+          val u = drama.copy(
             episodes = drama.episodes + newEp,
             episodesCount = drama.episodes.size + 1
           )
+          updatedDrama = u
+          u
         } else drama
       }
     }
+    updatedDrama?.let { com.example.data.firebase.FirestoreDramaRepository.saveDrama(it) }
   }
 
   fun deleteEpisode(dramaId: String, episodeId: String) {
+    var updatedDrama: Drama? = null
     _dramas.update { dramaList ->
       dramaList.map { drama ->
         if (drama.id == dramaId) {
           val filtered = drama.episodes.filterNot { it.id == episodeId }
-          drama.copy(
+          val u = drama.copy(
             episodes = filtered,
             episodesCount = filtered.size
           )
+          updatedDrama = u
+          u
         } else drama
       }
     }
+    updatedDrama?.let { com.example.data.firebase.FirestoreDramaRepository.saveDrama(it) }
   }
 
   fun updateAdConfig(newConfig: AdConfig) {

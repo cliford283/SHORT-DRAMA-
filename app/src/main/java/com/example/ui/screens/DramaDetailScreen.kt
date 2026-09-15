@@ -57,6 +57,21 @@ import com.example.ui.theme.DramaPill
 import com.example.ui.theme.DramaRed
 import com.example.ui.theme.DramaSurfaceVariant
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
+import com.example.ui.components.DramaDetailSkeleton
+import com.example.ui.components.shimmerBrush
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+
 @Composable
 fun DramaDetailScreen(
   drama: Drama,
@@ -64,10 +79,25 @@ fun DramaDetailScreen(
   onBackClick: () -> Unit,
   onPlayEpisode: (Drama, Episode) -> Unit,
   onFavoriteClick: (String) -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  isLoading: Boolean = false
 ) {
+  if (isLoading) {
+    DramaDetailSkeleton(onBackClick = onBackClick, modifier = modifier)
+    return
+  }
+
   val context = LocalContext.current
+  val coroutineScope = rememberCoroutineScope()
   val isFav = currentProfile.savedDramaIds.contains(drama.id)
+  var showWatchlistToast by remember { mutableStateOf(false) }
+  var watchlistToastMessage by remember { mutableStateOf("") }
+
+  // Check if user has saved playback progress in Firestore
+  val savedProgress = currentProfile.watchHistory[drama.id]
+  val resumeEp = savedProgress?.let { prog ->
+    drama.episodes.find { it.episodeNumber == prog.episodeNumber }
+  } ?: drama.episodes.firstOrNull()
 
   LazyColumn(
     modifier = modifier
@@ -237,7 +267,7 @@ fun DramaDetailScreen(
             )
           }
 
-          // Action Buttons: Play + Favorite
+          // Action Buttons: Play + Watchlist Heart Toggle
           Row(
             modifier = Modifier
               .fillMaxWidth()
@@ -246,14 +276,14 @@ fun DramaDetailScreen(
           ) {
             Button(
               onClick = {
-                val firstEp = drama.episodes.firstOrNull() ?: Episode(
+                val targetEp = resumeEp ?: drama.episodes.firstOrNull() ?: Episode(
                   id = "${drama.id}_ep_1",
                   dramaId = drama.id,
                   episodeNumber = 1,
                   title = "Episode 1",
                   videoUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
                 )
-                onPlayEpisode(drama, firstEp)
+                onPlayEpisode(drama, targetEp)
               },
               colors = ButtonDefaults.buttonColors(
                 containerColor = Color.White,
@@ -272,7 +302,13 @@ fun DramaDetailScreen(
               )
               Spacer(modifier = Modifier.width(6.dp))
               Text(
-                text = "Play",
+                text = if (savedProgress != null && savedProgress.episodeNumber > 1) {
+                  "Resume Ep ${savedProgress.episodeNumber}"
+                } else if (savedProgress != null) {
+                  "Resume Ep 1"
+                } else {
+                  "Play"
+                },
                 fontWeight = FontWeight.Bold,
                 fontSize = 14.sp
               )
@@ -280,21 +316,59 @@ fun DramaDetailScreen(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            // Heart Outline Box
+            // Watchlist Heart Toggle Icon
             Box(
               modifier = Modifier
                 .size(44.dp)
                 .clip(RoundedCornerShape(4.dp))
-                .border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
-                .background(Color.Black.copy(alpha = 0.5f))
-                .clickable { onFavoriteClick(drama.id) },
+                .border(
+                  width = 1.dp,
+                  color = if (isFav) DramaRed else Color.White.copy(alpha = 0.4f),
+                  shape = RoundedCornerShape(4.dp)
+                )
+                .background(if (isFav) DramaRed.copy(alpha = 0.2f) else Color.Black.copy(alpha = 0.5f))
+                .clickable {
+                  val willBeSaved = !isFav
+                  onFavoriteClick(drama.id)
+                  watchlistToastMessage = if (willBeSaved) "Added to Watchlist ❤️" else "Removed from Watchlist"
+                  showWatchlistToast = true
+                  coroutineScope.launch {
+                    delay(2000L)
+                    showWatchlistToast = false
+                  }
+                }
+                .testTag("btn_detail_watchlist_toggle"),
               contentAlignment = Alignment.Center
             ) {
               Icon(
                 imageVector = if (isFav) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                contentDescription = "Favorite",
+                contentDescription = if (isFav) "Remove from Watchlist" else "Add to Watchlist",
                 tint = if (isFav) DramaRed else Color.White,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier
+                  .size(22.dp)
+                  .testTag("btn_detail_heart")
+              )
+            }
+          }
+
+          // Watchlist feedback toast
+          AnimatedVisibility(
+            visible = showWatchlistToast,
+            enter = fadeIn(),
+            exit = fadeOut()
+          ) {
+            Box(
+              modifier = Modifier
+                .padding(top = 8.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(if (isFav) DramaRed else Color(0xFF2C2D35))
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+              Text(
+                text = watchlistToastMessage,
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
               )
             }
           }

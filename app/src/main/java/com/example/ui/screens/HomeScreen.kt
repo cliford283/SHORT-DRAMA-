@@ -73,6 +73,15 @@ import com.example.ui.theme.DramaRed
 import com.example.ui.theme.DramaSurfaceVariant
 import com.example.ui.theme.DramaTextMuted
 
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import com.example.data.firebase.FirestoreDramaRepository
+import com.example.ui.components.DramaCardSkeleton
+import com.example.ui.components.DramaGridSkeleton
+import com.example.ui.components.DramaRowSkeleton
+import com.example.ui.components.FirestoreLoadingSpinner
+import com.example.ui.components.shimmerBrush
+
 @Composable
 fun HomeScreen(
   dramas: List<Drama>,
@@ -85,23 +94,44 @@ fun HomeScreen(
   onToggleWatchlist: ((Drama) -> Unit)? = null,
   onProfileClick: () -> Unit,
   onAdminClick: () -> Unit,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  isLoading: Boolean = false
 ) {
   var searchQuery by remember { mutableStateOf("") }
   var selectedTrendingGenreIndex by remember { mutableIntStateOf(0) }
   val trendingGenres = listOf("All", "Romance", "Thriller", "Werewolf", "Billionaire", "Revenge", "Fantasy")
   val selectedGenre = trendingGenres[selectedTrendingGenreIndex]
 
-  // Filter dramas by search query
-  val searchResults = if (searchQuery.isBlank()) {
-    emptyList()
-  } else {
+  // Real-time Firestore Search state
+  var firestoreSearchResults by remember { mutableStateOf<List<Drama>>(emptyList()) }
+  var isSearchingFirestore by remember { mutableStateOf(false) }
+
+  // Real-time query to Firestore whenever searchQuery changes
+  LaunchedEffect(searchQuery) {
+    val query = searchQuery.trim()
+    if (query.isNotEmpty()) {
+      isSearchingFirestore = true
+      val reg = FirestoreDramaRepository.searchDramasRealtime(query) { results ->
+        firestoreSearchResults = results
+        isSearchingFirestore = false
+      }
+    } else {
+      firestoreSearchResults = emptyList()
+      isSearchingFirestore = false
+    }
+  }
+
+  val effectiveSearchResults = if (firestoreSearchResults.isNotEmpty()) {
+    firestoreSearchResults
+  } else if (searchQuery.isNotBlank()) {
     dramas.filter {
       it.title.contains(searchQuery, ignoreCase = true) ||
-      it.description.contains(searchQuery, ignoreCase = true) ||
       it.genre.contains(searchQuery, ignoreCase = true) ||
+      it.description.contains(searchQuery, ignoreCase = true) ||
       it.tags.any { tag -> tag.contains(searchQuery, ignoreCase = true) }
     }
+  } else {
+    emptyList()
   }
 
   // Filter trending dramas by TabRow selected genre
@@ -210,6 +240,20 @@ fun HomeScreen(
       }
     }
 
+    // Loading Indicator from Firestore
+    if (isLoading) {
+      item {
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+          contentAlignment = Alignment.Center
+        ) {
+          FirestoreLoadingSpinner("Syncing dramas from Firestore...")
+        }
+      }
+    }
+
     // Dynamic Search Results (if user is actively searching)
     if (searchQuery.isNotBlank()) {
       item {
@@ -223,21 +267,40 @@ fun HomeScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
           ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+              Text(
+                text = "FIRESTORE SEARCH (${effectiveSearchResults.size})",
+                color = DramaRed,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.ExtraBold,
+                letterSpacing = 1.2.sp
+              )
+              if (isSearchingFirestore) {
+                Spacer(modifier = Modifier.width(8.dp))
+                androidx.compose.material3.CircularProgressIndicator(
+                  modifier = Modifier.size(12.dp),
+                  strokeWidth = 2.dp,
+                  color = DramaRed
+                )
+              }
+            }
             Text(
-              text = "SEARCH RESULTS (${searchResults.size})",
-              color = DramaRed,
-              fontSize = 10.sp,
-              fontWeight = FontWeight.ExtraBold,
-              letterSpacing = 1.2.sp
-            )
-            Text(
-              text = "Matching \"$searchQuery\"",
+              text = "Live results for \"$searchQuery\"",
               color = DramaTextMuted,
               fontSize = 11.sp
             )
           }
 
-          if (searchResults.isEmpty()) {
+          if (isSearchingFirestore && effectiveSearchResults.isEmpty()) {
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 16.dp),
+              contentAlignment = Alignment.Center
+            ) {
+              FirestoreLoadingSpinner("Querying Firestore catalog...")
+            }
+          } else if (!isSearchingFirestore && effectiveSearchResults.isEmpty()) {
             Box(
               modifier = Modifier
                 .fillMaxWidth()
@@ -247,7 +310,7 @@ fun HomeScreen(
               contentAlignment = Alignment.Center
             ) {
               Text(
-                text = "No dramas found matching \"$searchQuery\". Try searching by title or keywords like 'mafia', 'werewolf', 'billionaire'.",
+                text = "No dramas found in Firestore matching \"$searchQuery\". Try searching by title or genres like 'Romance', 'Mafia', 'Billionaire'.",
                 color = DramaTextMuted,
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center
@@ -257,8 +320,12 @@ fun HomeScreen(
         }
       }
 
-      if (searchResults.isNotEmpty()) {
-        val chunkedSearch = searchResults.chunked(3)
+      if (isSearchingFirestore && effectiveSearchResults.isEmpty()) {
+        item {
+          DramaGridSkeleton(columns = 3, rowsCount = 2)
+        }
+      } else if (effectiveSearchResults.isNotEmpty()) {
+        val chunkedSearch = effectiveSearchResults.chunked(3)
         items(chunkedSearch) { rowDramas ->
           Row(
             modifier = Modifier
@@ -532,6 +599,16 @@ fun HomeScreen(
           }
         }
       }
+    } else if (isLoading) {
+      item {
+        val brush = shimmerBrush()
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(400.dp)
+            .background(brush)
+        )
+      }
     }
 
     // Optional AdSense Banner
@@ -654,6 +731,13 @@ fun HomeScreen(
             Spacer(modifier = Modifier.weight(1f))
           }
         }
+      }
+    } else if (isLoading) {
+      item {
+        SectionHeader(tag = "THE EDIT", title = "For You")
+      }
+      item {
+        DramaGridSkeleton(columns = 3, rowsCount = 3)
       }
     }
   }
